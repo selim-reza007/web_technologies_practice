@@ -5,6 +5,8 @@ import re
 import urllib.parse
 import hashlib
 import secrets
+import mimetypes
+import os
 
 DB_FILE = "blog.db"
 
@@ -48,7 +50,7 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 # ==========================================
-# 2. HTML TEMPLATES & LAYOUT ENGINE
+# 2. TEMPLATE RENDERER
 # ==========================================
 def render_template(title: str, content: str, user: dict = None) -> str:
     auth_nav = (
@@ -57,36 +59,33 @@ def render_template(title: str, content: str, user: dict = None) -> str:
         f'<a href="/logout">Logout</a>'
     ) if user else '<a href="/login">Login</a> | <a href="/register">Register</a>'
 
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{title} - StandardLib Blog</title>
-    <style>
-        body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.6; background: #f9f9f9; color: #333; }}
-        header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #e0e0e0; padding-bottom: 12px; margin-bottom: 30px; }}
-        a {{ color: #0066cc; text-decoration: none; }}
-        a:hover {{ text-decoration: underline; }}
-        .card {{ background: white; padding: 20px; border-radius: 6px; border: 1px solid #e2e8f0; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }}
-        .meta {{ font-size: 0.85em; color: #666; margin-bottom: 12px; }}
-        form input, form textarea {{ width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-family: inherit; }}
-        form button {{ background: #0066cc; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 1rem; }}
-        form button:hover {{ background: #0052a3; }}
-    </style>
-</head>
-<body>
-    <header>
-        <h2 style="margin:0;"><a href="/" style="color:inherit; text-decoration:none;">StandardLib Blog</a></h2>
-        <nav>{auth_nav}</nav>
-    </header>
-    <main>{content}</main>
-</body>
-</html>"""
+    template_path = os.path.join("templates", "layout.html")
+    with open(template_path, "r", encoding="utf-8") as f:
+        layout = f.read()
+
+    return layout.format(title=title, auth_nav=auth_nav, content=content)
 
 # ==========================================
 # 3. HTTP REQUEST HANDLER & ROUTER
 # ==========================================
 class BlogHandler(http.server.BaseHTTPRequestHandler):
+
+    def serve_static(self, path: str):
+        # Prevent directory traversal attacks
+        safe_path = os.path.normpath(path.lstrip("/"))
+        if not safe_path.startswith("static"):
+            self.send_error(403, "Access Denied")
+            return
+
+        if os.path.exists(safe_path) and os.path.isfile(safe_path):
+            mime_type, _ = mimetypes.guess_type(safe_path)
+            self.send_response(200)
+            self.send_header("Content-Type", mime_type or "application/octet-stream")
+            self.end_headers()
+            with open(safe_path, "rb") as f:
+                self.wfile.write(f.read())
+        else:
+            self.send_error(404, "File Not Found")
 
     def get_current_user(self):
         cookie_header = self.headers.get('Cookie')
@@ -131,9 +130,15 @@ class BlogHandler(http.server.BaseHTTPRequestHandler):
 
     # --- GET ENDPOINTS ---
     def do_GET(self):
-        user = self.get_current_user()
         url = urllib.parse.urlparse(self.path)
         path = url.path
+
+        # Static Asset Handler (.css, .js, images)
+        if path.startswith("/static/"):
+            self.serve_static(path)
+            return
+
+        user = self.get_current_user()
 
         if path == "/":
             with get_db() as conn:
